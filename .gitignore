@@ -1,0 +1,14 @@
+# secrets
+.env*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# local state/data
+data/
+*.sqlite
+logs/
+.DS_Store
