@@ -1,0 +1,178 @@
+# Codex 5.3 Handoff — EURUSD cTrader Bot
+
+**Date:** 2026-02-10  
+**Repo:** `/Users/joe/2026 projects/EURUSD-cTrader-bot`  
+**Goal:** Build a production‑grade EURUSD bot with realistic backtesting, then tune a viable strategy (starting with London Open Breakout).
+
+---
+
+## 1) End‑to‑End Summary (Plain English)
+
+We collect EURUSD ticks from cTrader into SQLite, build cleaned candle tables, and run backtests against those candles.  
+Right now all strategies are losing **except** London Open Breakout, which is now slightly profitable after filters were added.  
+Next step is to **tune London Open Breakout** and then run the **full robust backtest suite** (walk‑forward, Monte Carlo, regimes).
+
+---
+
+## 2) Codebase Overview (What Each Part Does)
+
+### Data + DB
+- `data/ict_bot.sqlite3` — main SQLite DB (local)
+- `shared/db.py` — DB path + connector
+- `scripts/init_db.py` — creates all tables
+
+### Data Pipeline (Backtests)
+- `backtest/data_pipeline.py`
+  - Cleans ticks
+  - Tags sessions (Asia/Frankfurt/London/NY)
+  - Builds candle tables: `candles_m1`, `candles_m5`, `candles_m15`, `candles_h1`
+- `backtest/session.py` — DST‑aware session classification
+
+### Backtest Engine
+- `backtest/engine.py`
+  - Candle‑based execution
+  - Bid/ask fills
+  - Session‑based spread/slippage
+  - Signal timing modes: `close`, `open`, `close_plus_1bar`
+
+### Strategies (EURUSD)
+File: `backtest/eurusd_strategies.py`
+- London Open Breakout
+- Asian Range Fade
+- MA Cross + ADX
+- Bollinger Bounce
+- RSI Divergence
+
+### Robustness Tooling
+Files:
+- `backtest/walk_forward.py`
+- `backtest/monte_carlo.py`
+- `backtest/overfitting.py`
+- `backtest/regime.py`
+
+### Runners
+- `scripts/build_backtest_data.py` — builds candles
+- `scripts/run_backtests_eurusd_fast.py` — fast backtest → `/tmp/eurusd_fast_backtests.csv`
+- `scripts/run_backtests_eurusd.py` — full robust backtests + DB writes
+
+---
+
+## 3) What We Have Done (Chronological)
+
+1. **Renamed repo** to `EURUSD-cTrader-bot`
+2. **Built backtest pipeline**:
+   - Clean ticks
+   - Session tagging
+   - Candle tables
+3. **Upgraded backtest engine**:
+   - Bid/ask execution
+   - Session‑based spread/slippage
+   - Signal timing options
+4. **Improved London Open Breakout**:
+   - Max spread filter
+   - ATR range filter
+   - Candle body confirmation
+   - One trade per day
+5. **Verified data exists**:
+   - `quotes` ~375k rows
+   - Candle tables now built successfully
+6. **Ran fast backtests** and wrote results to:
+   - `/tmp/eurusd_fast_backtests.csv`
+
+---
+
+## 4) Current State (Right Now)
+
+### Data
+- SQLite DB exists locally:
+  - `data/ict_bot.sqlite3`
+- Candle tables built:
+  - `candles_m1=363,339`
+  - `candles_m5=73,283`
+  - `candles_m15=24,463`
+  - `candles_h1=6,119`
+
+### Fast Backtest Results (Latest)
+File: `/tmp/eurusd_fast_backtests.csv`
+
+- London Open Breakout **now slightly profitable**
+  - `cagr=0.000983` (~0.10%)
+  - `profit_factor=1.021`
+  - `max_drawdown=1.9%`
+  - trades: 159
+- Other four strategies still negative.
+
+---
+
+## 5) What’s Blocking / Confusing
+
+**Main confusion:** backtests were “not working” because candle tables were empty.  
+This is now fixed. Backtests run and produce output.
+
+---
+
+## 6) Where We’re Headed (Next Steps)
+
+1. **Tune London Open Breakout** properly
+   - Search buffer, ATR bounds, body ratio
+2. **Run full robustness backtests**
+   - Walk‑forward, Monte Carlo, regime analysis
+3. Decide:
+   - If London Open Breakout survives robust tests → proceed to paper trading
+   - If it fails → redesign strategy
+
+---
+
+## 7) How to Run (Cheat Sheet)
+
+### Build candles
+```
+PYTHONPATH=. .venv/bin/python scripts/build_backtest_data.py
+```
+
+### Fast backtest (CSV)
+```
+PYTHONPATH=. .venv/bin/python scripts/run_backtests_eurusd_fast.py
+```
+
+### Full backtest
+```
+PYTHONPATH=. .venv/bin/python scripts/run_backtests_eurusd.py
+```
+
+---
+
+## 8) Sharing Safety
+
+`.env` and all secrets are ignored by git.  
+Use GitHub zip or `git archive` to share safely.
+
+---
+
+## 9) LLM Review Drop‑Folders
+
+Created:
+```
+LLM_reviews/v1/{grok,gemini,gpt,deepseek,kimi}
+LLM_reviews/v2/{grok,gemini,gpt,deepseek,kimi}
+LLM_reviews/v3/{grok,gemini,gpt,deepseek,kimi}
+```
+
+Paste reviews into those folders so we can compare and iterate.
+
+---
+
+## 10) Nautilus Trader (Unzipped for Review)
+
+Location:
+```
+RESEARCH ME/nautilus_trader-develop/
+```
+
+We can borrow ideas such as:
+- event‑driven engine structure
+- order types (OCO, limit, stop)
+- execution simulation
+- portfolio accounting and risk engine
+
+Full integration is heavy; we’ll copy design patterns instead.
