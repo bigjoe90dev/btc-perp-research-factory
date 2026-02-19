@@ -26,6 +26,8 @@ def _infer_kind(df: pd.DataFrame) -> str:
         return "ohlc"
     if {"bid", "ask"}.issubset(cols) or "mid" in cols:
         return "ticks"
+    if "ts_utc" in cols or "ts_utc_ns" in cols:
+        return "series"
     raise ValueError("Could not infer dataset kind. Pass --kind explicitly.")
 
 
@@ -58,6 +60,49 @@ def _compute_gap_stats(ts: pd.Series, expected_seconds: int | None) -> tuple[int
     return gaps, longest_gap
 
 
+def _compute_gap_report(ts: pd.Series, expected_seconds: int | None, max_samples: int = 10) -> dict[str, Any] | None:
+    if expected_seconds is None or len(ts) < 2:
+        return None
+
+    deltas = ts.diff()
+    secs = deltas.dt.total_seconds()
+    mask = secs > expected_seconds
+    if not bool(mask.any()):
+        return {"count": 0, "samples": []}
+
+    idxs = list(np.where(mask.to_numpy())[0])[:max_samples]
+    samples: list[dict[str, Any]] = []
+    for i in idxs:
+        prev_ts = ts.iloc[i - 1]
+        cur_ts = ts.iloc[i]
+        delta_seconds = float(secs.iloc[i])
+        missing = int(max(round(delta_seconds / expected_seconds) - 1, 1))
+        samples.append(
+            {
+                "from_ts_utc": to_iso_z(prev_ts),
+                "to_ts_utc": to_iso_z(cur_ts),
+                "delta_seconds": int(round(delta_seconds)),
+                "missing_intervals_approx": missing,
+            }
+        )
+
+    return {"count": int(mask.sum()), "samples": samples}
+
+
+def _resolve_ts_series(df: pd.DataFrame) -> tuple[pd.Series, int]:
+    if "ts_utc" in df.columns:
+        parsed = pd.to_datetime(df["ts_utc"], utc=True, errors="coerce")
+        invalid = int(parsed.isna().sum())
+        return parsed, invalid
+    if "ts_utc_ns" in df.columns:
+        ns = pd.to_numeric(df["ts_utc_ns"], errors="coerce")
+        invalid_numeric = int(ns.isna().sum())
+        parsed = pd.to_datetime(ns, unit="ns", utc=True, errors="coerce")
+        invalid = invalid_numeric + int(parsed.isna().sum())
+        return parsed, invalid
+    raise ValueError("Missing required timestamp column: ts_utc or ts_utc_ns")
+
+
 def validate_frame(
     df: pd.DataFrame,
     kind: str,
@@ -67,14 +112,14 @@ def validate_frame(
     errors: list[str] = []
     summary: dict[str, Any] = {}
 
-    if "ts_utc" not in df.columns:
-        return {"ok": False}, ["Missing required column: ts_utc"]
-
     work = df.copy()
-    parsed_ts = pd.to_datetime(work["ts_utc"], utc=True, errors="coerce")
-    invalid_ts = int(parsed_ts.isna().sum())
+    try:
+        parsed_ts, invalid_ts = _resolve_ts_series(work)
+    except ValueError as exc:
+        return {"ok": False}, [str(exc)]
+
     if invalid_ts > 0:
-        errors.append(f"Invalid ts_utc values: {invalid_ts}")
+        errors.append(f"Invalid timestamp values: {invalid_ts}")
 
     work["ts_utc"] = parsed_ts
     work = work.dropna(subset=["ts_utc"])
@@ -120,6 +165,9 @@ def validate_frame(
             summary["ohlc_invariant_violations"] = invariant_violations
             if invariant_violations > 0:
                 errors.append(f"OHLC invariant violations: {invariant_violations}")
+    elif kind == "series":
+        # Generic timeseries validation: timestamp checks + gap report only.
+        pass
     else:
         errors.append(f"Unsupported kind: {kind}")
 
@@ -135,6 +183,7 @@ def validate_frame(
     inferred_expected = _infer_expected_seconds_from_name(path)
     effective_expected = expected_seconds if expected_seconds is not None else inferred_expected
     gaps_found, longest_gap = _compute_gap_stats(ts, effective_expected)
+    gap_report = _compute_gap_report(ts, effective_expected)
 
     summary.update(
         {
@@ -154,6 +203,7 @@ def validate_frame(
             ),
             "gaps_found": gaps_found,
             "longest_gap_seconds": longest_gap,
+            "gap_report": gap_report,
             "errors": errors,
         }
     )
@@ -183,7 +233,7 @@ def main() -> None:
     parser.add_argument("--input", nargs="+", required=True, help="Parquet/CSV files to validate")
     parser.add_argument(
         "--kind",
-        choices=["auto", "ticks", "ohlc"],
+        choices=["auto", "ticks", "ohlc", "series"],
         default="auto",
         help="Dataset kind. Use auto to infer from columns.",
     )

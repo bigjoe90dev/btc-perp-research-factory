@@ -27,6 +27,20 @@ btcusdt:
   canonical_1m_path: research/data_cache/btcusdt/binance/normalized/btcusdt_1m.parquet
   files_root: research/data_cache/btcusdt/binance
 
+btc_bitmex_perp:
+  source: bitmex
+  symbol: XBTUSD
+  market: perp
+  timeframe: 1m
+  start_ts_utc: null
+  end_ts_utc: null
+  required_start_ts_utc: null
+  required_end_ts_utc: null
+  cache_root: research/data_cache/btc_bitmex_perp
+  canonical_1m_path: research/data_cache/btc_bitmex_perp/normalized/candles_1m.parquet
+  funding_path: research/data_cache/btc_bitmex_perp/normalized/funding.parquet
+  files_root: research/data_cache/btc_bitmex_perp
+
 xauusd:
   source: dukascopy
   symbol: XAUUSD

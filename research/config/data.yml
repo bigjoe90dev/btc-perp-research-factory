@@ -1,0 +1,14 @@
+manifest_path: research/data_manifest.yml
+primary_dataset_key: BTC_BITMEX_PERP_1M
+proxy_dataset_key: btcusdt
+required_market: perp
+required_symbol: BTC
+
+loader:
+  enforce_funding_coverage: false
+  funding_end_tolerance_hours: 12
+  base_timeframe: 1m
+  allowed_timeframes:
+    - 1m
+    - 5m
+    - 1h

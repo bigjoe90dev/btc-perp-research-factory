@@ -2,10 +2,12 @@
 .venv/
 research/data_cache/
 research/artefacts/logs/
+research/artefacts/runs/
 *.parquet
 *.db
 *.sqlite
 *.sqlite3
+dist/
 __pycache__/
 *.pyc
 .DS_Store

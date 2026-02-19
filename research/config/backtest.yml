@@ -1,0 +1,100 @@
+rules_version: "v1"
+seed: 42
+initial_equity: 10000.0
+
+execution:
+  order_fill: next_bar_open
+  latency_seconds: 0
+  execution_delay_seconds: 2
+  fee_model: taker
+  taker_fee_bps: 4.0
+  maker_fee_bps: 1.0
+  max_candle_volume_participation: 0.02
+  participation_mode: reject
+  max_position_notional_usd: 250000
+  min_notional_usd: 10.0
+  qty_step: 0.0001
+  price_tick_size: 0.1
+  delay_bps_per_second: 0.1
+  delay_bps_per_vol_per_second: 4.0
+  slippage:
+    bps_base: 1.5
+    bps_per_vol: 15.0
+    vol_proxy: candle_range
+
+position_sizing:
+  leverage: 1.0
+  risk_fraction: 1.0
+
+cv:
+  mode: walk_forward
+  train_bars: 400
+  test_bars: 160
+  step_bars: 160
+  purge_bars: 5
+  embargo_bars: 5
+
+candidate_generation:
+  default_count: 300
+  smoke_count: 5
+  families:
+    - liquidation_reversal
+    - meanrev_vwap
+    - momentum_breakout
+    - trend_ma_regime
+    - volatility_expansion
+
+windowing:
+  enabled: true
+  optimization:
+    start_ts_utc: "2021-03-01T04:00:00Z"
+    end_ts_utc: "2024-12-31T23:59:00Z"
+  out_of_sample:
+    start_ts_utc: "2025-01-01T04:00:00Z"
+    end_ts_utc: "2026-02-18T23:59:00Z"
+  robustness:
+    start_ts_utc: null
+    end_ts_utc: null
+
+metrics:
+  annualization_bars_5m: 105120
+  annualization_bars_1h: 8760
+
+gates:
+  min_trades: 8
+  max_drawdown_pct: 0.35
+  min_positive_fold_ratio: 0.5
+  max_bootstrap_prob_negative: 0.6
+  min_return_skewness: -1.5
+  max_return_excess_kurtosis: 8.0
+  min_win_loss_ratio: 0.8
+  enable_correlation_gate: true
+  max_return_correlation: 0.75
+  correlation_use_absolute: false
+  correlation_min_points: 100
+  require_positive_oos_window: true
+  min_oos_trades: 5
+  require_nonnegative_robustness_window: false
+  require_cost_robustness: true
+  require_latency_robustness: true
+  cost_robustness_levels:
+    - 1.25
+    - 1.5
+  latency_delay_seconds:
+    - 2
+    - 5
+  parameter_perturbation_step: 1
+
+scoring:
+  weight_sharpe: 0.40
+  weight_sortino: 0.25
+  weight_return: 0.20
+  weight_drawdown: 0.15
+  complexity_penalty_per_param: 0.02
+  turnover_penalty: 0.001
+  negative_skew_penalty: 0.1
+  kurtosis_penalty: 0.02
+
+reporting:
+  top_overall: 10
+  top_per_family: 3
