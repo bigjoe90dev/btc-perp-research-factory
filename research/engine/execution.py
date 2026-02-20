@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
 from .types import Bar, Fill
@@ -47,13 +48,16 @@ def round_qty_to_step(qty_abs: float, qty_step: float) -> float:
 def round_price_to_tick(price: float, tick_size: float, side: int) -> float:
     if tick_size <= 0:
         return float(price)
-    units = price / tick_size
+    tick = Decimal(str(tick_size))
+    px = Decimal(str(price))
+    units = px / tick
     # Conservative rounding: pay more on buys, receive less on sells.
-    if side > 0:
-        units = math.ceil(units)
-    else:
-        units = math.floor(units)
-    return float(max(units * tick_size, tick_size))
+    rounding = ROUND_CEILING if side > 0 else ROUND_FLOOR
+    units_i = units.to_integral_value(rounding=rounding)
+    rounded = units_i * tick
+    if rounded < tick:
+        rounded = tick
+    return float(rounded)
 
 
 def execute_market_order_next_open(
