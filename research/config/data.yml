@@ -6,7 +6,7 @@ required_symbol: BTC
 
 loader:
   enforce_funding_coverage: true
-  funding_end_tolerance_hours: 12
+  funding_end_tolerance_hours: 8
   base_timeframe: 1m
   allowed_timeframes:
     - 1m

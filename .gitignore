@@ -3,6 +3,7 @@
 research/data_cache/
 research/artefacts/logs/
 research/artefacts/runs/
+research/artefacts/generation/
 *.parquet
 *.db
 *.sqlite

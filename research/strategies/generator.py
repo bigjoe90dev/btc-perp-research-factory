@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from itertools import product
 from typing import Any
 
 from research.engine.types import CandidateSpec
+from research.strategies.candidate_ids import strategy_id
 
 
 def _strategy_id(family: str, timeframe: str, params: dict[str, Any], rules_version: str, dataset_key: str) -> str:
-    payload = {
-        "family": family,
-        "timeframe": timeframe,
-        "params": params,
-        "rules_version": rules_version,
-        "dataset_key": dataset_key,
-    }
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()[:16]
+    return strategy_id(
+        family=family,
+        timeframe=timeframe,
+        params=params,
+        rules_version=rules_version,
+        dataset_key=dataset_key,
+    )
 
 
 def _momentum_grid() -> list[dict[str, Any]]:

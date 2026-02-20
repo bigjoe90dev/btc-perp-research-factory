@@ -101,3 +101,43 @@ scoring:
 reporting:
   top_overall: 10
   top_per_family: 3
+
+llm_generation:
+  prompt:
+    path: research/generator/prompts/master_btc_perp_generator_prompt_v1.md
+    version: master_btc_perp_generator_prompt_v1
+  api:
+    base_url: https://openrouter.ai/api/v1
+    timeout_seconds: 60
+    max_retries: 3
+  model_lanes:
+    minimax:
+      model_id: minimax/minimax-m2.5
+      calls: 2
+    kimi:
+      model_id: moonshotai/kimi-k2.5
+      calls: 2
+    deepseek:
+      model_id: deepseek/deepseek-v3.2
+      calls: 2
+    grok_generate:
+      model_id: x-ai/grok-4.1-fast
+      calls: 4
+  synthesis:
+    model_id: x-ai/grok-4.1-fast
+  fail_closed_on_missing_grok: true
+  limits:
+    max_total_calls: 12
+    max_completion_tokens_per_call: 1800
+    max_total_completion_tokens: 22000
+  generation:
+    top_n_final: 12
+    strategies_per_call: 8
+    diversity_param_overlap_max: 0.70
+  improvement_round:
+    enabled: false
+    model_id: deepseek/deepseek-v3.2
+    calls: 1
+  pricing:
+    default_input_per_1k: 0.0
+    default_output_per_1k: 0.0

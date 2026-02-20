@@ -18,7 +18,8 @@ from research.engine.metrics import compute_metrics
 from research.engine.scoring import adjusted_score_for_multiple_testing, raw_score
 from research.engine.simulator import run_backtest
 from research.engine.stress import run_stress_suite
-from research.engine.types import SimulationResult
+from research.engine.types import CandidateSpec, SimulationResult
+from research.generator.pipeline import GenerationResult, generate_candidates_with_llm
 from research.reports.charts import write_equity_snapshots
 from research.reports.checklist import write_checklist_artifacts
 from research.reports.daily import write_daily_report
@@ -96,6 +97,32 @@ def _serialize_candidate(spec: Any) -> dict[str, Any]:
         "rules_version": spec.rules_version,
         "dataset_key": spec.dataset_key,
     }
+
+
+def _load_candidates_from_file(path: str | Path) -> list[CandidateSpec]:
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    rows = raw.get("candidates", raw) if isinstance(raw, dict) else raw
+    if not isinstance(rows, list):
+        raise ValueError(f"Invalid candidate file format: {path}")
+
+    out: list[CandidateSpec] = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"Invalid candidate row at index {i}")
+        try:
+            out.append(
+                CandidateSpec(
+                    strategy_id=str(row["strategy_id"]),
+                    family=str(row["family"]),
+                    timeframe=str(row["timeframe"]),
+                    params=dict(row["params"]),
+                    rules_version=str(row["rules_version"]),
+                    dataset_key=str(row["dataset_key"]),
+                )
+            )
+        except KeyError as exc:
+            raise ValueError(f"Candidate row missing key at index {i}: {exc}") from exc
+    return out
 
 
 def _parse_ts_or_none(value: Any) -> pd.Timestamp | None:
@@ -267,6 +294,55 @@ def _print_detected_datasets(data_cfg_path: str) -> list[dict[str, Any]]:
             "start={start_ts_utc} | end={end_ts_utc}".format(**row)
         )
     return rows
+
+
+def _doctor_data(data_cfg_path: str) -> None:
+    data_cfg = _read_yaml(data_cfg_path)
+    dataset_key = str(data_cfg.get("primary_dataset_key", ""))
+    required_symbol = str(data_cfg.get("required_symbol", "")).strip().upper()
+    required_market = str(data_cfg.get("required_market", "")).strip().lower()
+    tolerance = float(data_cfg.get("loader", {}).get("funding_end_tolerance_hours", 8.0))
+
+    rows = _print_detected_datasets(data_cfg_path)
+    selected = None
+    for row in rows:
+        if str(row.get("dataset_id")) == dataset_key:
+            selected = row
+            break
+
+    print("\nData doctor:")
+    print(f"- primary_dataset_key: {dataset_key or 'MISSING'}")
+    print(f"- required_symbol: {required_symbol or 'NONE'}")
+    print(f"- required_market: {required_market or 'NONE'}")
+    print(f"- funding_end_tolerance_hours: {tolerance}")
+
+    if selected is None:
+        print("- status: FAIL (primary dataset key not found in manifest)")
+        return
+
+    candles = Path(str(selected.get("canonical_file")))
+    funding = Path(str(selected.get("funding_file")))
+    print(f"- candles_file: {candles}")
+    print(f"- funding_file: {funding}")
+
+    missing = []
+    if not candles.exists():
+        missing.append(str(candles))
+    if not funding.exists():
+        missing.append(str(funding))
+
+    if missing:
+        print("- status: FAIL (missing required files)")
+        for p in missing:
+            print(f"  - missing: {p}")
+    else:
+        print("- status: OK (required files found)")
+
+    print("\nReady to generate? Run:")
+    print(
+        "python -m research.cli generate_candidates "
+        f"--data-config {data_cfg_path} --count 80 --timeframes 1h 5m"
+    )
 
 
 def _bars_per_year_from_cfg(timeframe: str, cfg: dict[str, Any]) -> int:
@@ -558,6 +634,7 @@ def _execute_run(
     candidates_n: int,
     timeframes: list[str],
     families: list[str],
+    candidate_file: str | None = None,
 ) -> tuple[str, Path]:
     data_cfg = _read_yaml(data_cfg_path)
     backtest_cfg = _read_yaml(backtest_cfg_path)
@@ -578,7 +655,7 @@ def _execute_run(
 
     windowing_cfg = backtest_cfg.get("windowing", {})
     windowing_enabled = bool(windowing_cfg.get("enabled", False))
-    funding_tol_hours = float(data_cfg.get("loader", {}).get("funding_end_tolerance_hours", 12.0))
+    funding_tol_hours = float(data_cfg.get("loader", {}).get("funding_end_tolerance_hours", 8.0))
 
     optimization_bundles = None
     oos_bundles = None
@@ -606,13 +683,16 @@ def _execute_run(
     eval_bundles = optimization_bundles if (windowing_enabled and optimization_bundles is not None) else bundles
 
     rules_version = str(backtest_cfg.get("rules_version", "v1"))
-    candidates = generate_candidates(
-        families=families,
-        timeframes=timeframes,
-        count=candidates_n,
-        rules_version=rules_version,
-        dataset_key=dataset_key,
-    )
+    if candidate_file:
+        candidates = _load_candidates_from_file(candidate_file)
+    else:
+        candidates = generate_candidates(
+            families=families,
+            timeframes=timeframes,
+            count=candidates_n,
+            rules_version=rules_version,
+            dataset_key=dataset_key,
+        )
     if not candidates:
         raise RuntimeError("No candidates generated")
 
@@ -765,6 +845,53 @@ def _execute_run(
     return run_id, report_path
 
 
+def _execute_generate_candidates(
+    data_cfg_path: str,
+    backtest_cfg_path: str,
+    count: int,
+    timeframes: list[str],
+    out_path: str | None,
+    estimate_only: bool,
+) -> GenerationResult:
+    data_cfg = _read_yaml(data_cfg_path)
+    backtest_cfg = _read_yaml(backtest_cfg_path)
+    dataset_key = str(data_cfg.get("primary_dataset_key", "BTC_BITMEX_PERP_1M"))
+    rules_version = str(backtest_cfg.get("rules_version", "v1"))
+
+    result = generate_candidates_with_llm(
+        data_config_path=data_cfg_path,
+        backtest_cfg=backtest_cfg,
+        count=count,
+        timeframes=[str(x) for x in timeframes],
+        dataset_key=dataset_key,
+        rules_version=rules_version,
+        out_path=out_path,
+        estimate_only=estimate_only,
+    )
+
+    if estimate_only:
+        print("Estimate-only generation complete.")
+        print(f"Generation ID: {result.generation_id}")
+        print(f"Manifest: {result.artefact_dir / 'generation_manifest.json'}")
+        print(f"Estimated candidate file: {result.candidate_file}")
+        return result
+
+    print("LLM candidate generation complete.")
+    print(f"Generation ID: {result.generation_id}")
+    print(f"Candidates: {len(result.candidates)}")
+    print(f"Candidate file: {result.candidate_file}")
+    print(f"Artefacts: {result.artefact_dir}")
+    print("Run backtest with:")
+    print(
+        "python -m research.cli run "
+        f"--data-config {data_cfg_path} "
+        f"--backtest-config {backtest_cfg_path} "
+        f"--timeframes {' '.join([str(x) for x in timeframes])} "
+        f"--candidate-file {result.candidate_file}"
+    )
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="BTC Hyperliquid research CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -778,6 +905,7 @@ def main() -> None:
     p_run.add_argument("--backtest-config", default="research/config/backtest.yml")
     p_run.add_argument("--candidates", type=int, default=300)
     p_run.add_argument("--timeframes", nargs="+", default=["5m", "1h"])
+    p_run.add_argument("--candidate-file", default=None)
 
     p_report = sub.add_parser("report", help="Show report path for run id")
     p_report.add_argument("--run_id", required=True)
@@ -785,10 +913,36 @@ def main() -> None:
     p_detect = sub.add_parser("detect_datasets", help="Print datasets from manifest")
     p_detect.add_argument("--data-config", default="research/config/data.yml")
 
+    p_doctor = sub.add_parser("doctor_data", help="Check data readiness and next steps")
+    p_doctor.add_argument("--data-config", default="research/config/data.yml")
+
+    p_gen = sub.add_parser("generate_candidates", help="Generate candidates with OpenRouter model council")
+    p_gen.add_argument("--data-config", default="research/config/data.yml")
+    p_gen.add_argument("--backtest-config", default="research/config/backtest.yml")
+    p_gen.add_argument("--count", type=int, default=80)
+    p_gen.add_argument("--timeframes", nargs="+", default=["1h"])
+    p_gen.add_argument("--out", default=None)
+    p_gen.add_argument("--estimate-only", action="store_true")
+
     args = parser.parse_args()
 
     if args.cmd == "detect_datasets":
         _print_detected_datasets(args.data_config)
+        return
+
+    if args.cmd == "doctor_data":
+        _doctor_data(args.data_config)
+        return
+
+    if args.cmd == "generate_candidates":
+        _execute_generate_candidates(
+            data_cfg_path=args.data_config,
+            backtest_cfg_path=args.backtest_config,
+            count=int(args.count),
+            timeframes=[str(x) for x in args.timeframes],
+            out_path=args.out,
+            estimate_only=bool(args.estimate_only),
+        )
         return
 
     if args.cmd == "smoke_test":
@@ -813,6 +967,7 @@ def main() -> None:
             candidates_n=int(args.candidates),
             timeframes=[str(x) for x in args.timeframes],
             families=fams,
+            candidate_file=args.candidate_file,
         )
         return
 
