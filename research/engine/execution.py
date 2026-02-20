@@ -63,6 +63,7 @@ def execute_market_order_next_open(
     fee_bps: float,
     slippage_cfg: dict[str, Any],
     execution_cfg: dict[str, Any],
+    slippage_bar: Bar | None = None,
 ) -> tuple[Fill, float]:
     """
     Returns (fill, cash_delta) where cash_delta is applied to account cash.
@@ -70,7 +71,10 @@ def execute_market_order_next_open(
     if qty_signed == 0:
         raise ValueError("qty_signed must be non-zero")
 
-    slip_bps = compute_slippage_bps(next_bar, slippage_cfg, execution_cfg=execution_cfg)
+    # Use a bar known at decision time for volatility-dependent slippage terms.
+    # If not provided, default to next_bar to preserve backward compatibility.
+    proxy_bar = slippage_bar if slippage_bar is not None else next_bar
+    slip_bps = compute_slippage_bps(proxy_bar, slippage_cfg, execution_cfg=execution_cfg)
     side = 1 if qty_signed > 0 else -1
 
     if side > 0:

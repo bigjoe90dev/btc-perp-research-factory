@@ -72,7 +72,7 @@ gates:
   min_win_loss_ratio: 0.5
   enable_correlation_gate: true
   max_return_correlation: 0.75
-  correlation_use_absolute: false
+  correlation_use_absolute: true
   correlation_min_points: 100
   require_positive_oos_window: false
   min_oos_trades: 2

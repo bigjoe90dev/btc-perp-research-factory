@@ -169,6 +169,7 @@ def run_backtest(
             fee_bps=fee_bps,
             slippage_cfg=slippage_cfg,
             execution_cfg=exec_cfg,
+            slippage_bar=bar,
         )
         fills.append(fill)
         cash += cash_delta

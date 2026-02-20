@@ -18,6 +18,7 @@ from research.engine.metrics import compute_metrics
 from research.engine.scoring import adjusted_score_for_multiple_testing, raw_score
 from research.engine.simulator import run_backtest
 from research.engine.stress import run_stress_suite
+from research.engine.types import SimulationResult
 from research.reports.charts import write_equity_snapshots
 from research.reports.checklist import write_checklist_artifacts
 from research.reports.daily import write_daily_report
@@ -59,6 +60,7 @@ def _aggregate_fold_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "trades_count",
         "exposure",
         "turnover",
+        "turnover_ratio",
         "profit_factor",
         "expectancy",
         "avg_win",
@@ -266,26 +268,89 @@ def _print_detected_datasets(data_cfg_path: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _bars_per_year_from_cfg(timeframe: str, cfg: dict[str, Any]) -> int:
+    metrics_cfg = cfg.get("metrics", {})
+    if timeframe == "5m":
+        return int(metrics_cfg.get("annualization_bars_5m", 105_120))
+    if timeframe == "1h":
+        return int(metrics_cfg.get("annualization_bars_1h", 8_760))
+    return 525_600
+
+
+def _stitch_fold_equity(fold_equity_curves: list[pd.DataFrame], initial_equity: float) -> pd.DataFrame:
+    required_cols = ["ts_utc", "equity", "cash", "position_qty", "close", "high", "low", "gross_notional", "trade_notional"]
+    stitched: list[pd.DataFrame] = []
+    running_equity = float(initial_equity)
+
+    for frame in fold_equity_curves:
+        if frame.empty:
+            continue
+        eq = frame.sort_values("ts_utc").copy().reset_index(drop=True)
+        for col in required_cols:
+            if col not in eq.columns:
+                eq[col] = pd.NaT if col == "ts_utc" else 0.0
+
+        # Compound fold returns so combined equity is OOS-only and continuous.
+        ret = eq["equity"].pct_change().fillna(0.0)
+        eq["equity"] = running_equity * (1.0 + ret).cumprod()
+        running_equity = float(eq["equity"].iloc[-1])
+
+        stitched.append(eq[required_cols].copy())
+
+    if not stitched:
+        return pd.DataFrame(columns=required_cols)
+
+    out = pd.concat(stitched, ignore_index=True)
+    out = out.sort_values("ts_utc").drop_duplicates(subset=["ts_utc"], keep="last").reset_index(drop=True)
+    return out
+
+
+def _build_oos_simulation(fold_sims: list[SimulationResult], initial_equity: float) -> SimulationResult:
+    equity_curve = _stitch_fold_equity([sim.equity_curve for sim in fold_sims], initial_equity=initial_equity)
+    trades = sorted(
+        [t for sim in fold_sims for t in sim.trades],
+        key=lambda x: (x.entry_ts_utc, x.exit_ts_utc),
+    )
+    summary = {
+        "bars": len(equity_curve),
+        "trades": len(trades),
+        "folds": len(fold_sims),
+        "mode": "oos_stitched",
+    }
+    return SimulationResult(equity_curve=equity_curve, trades=trades, fills=[], funding_events=[], summary=summary)
+
+
 def _runner_for_candidate(
     bundle,
     funding_by_bar,
+    splits,
     family: str,
     timeframe: str,
     backtest_cfg: dict[str, Any],
 ):
     def _runner(params: dict[str, Any], cfg: dict[str, Any]) -> tuple[dict[str, Any], Any]:
-        strat = build_strategy(family, params)
-        sim = run_backtest(
-            candles=bundle.candles,
-            funding_rates_by_bar=funding_by_bar,
-            strategy=strat,
-            timeframe=timeframe,
-            backtest_cfg=cfg,
+        fold_sims: list[SimulationResult] = []
+        for sp in splits:
+            test_df = bundle.candles.iloc[sp.test_idx].reset_index(drop=True)
+            test_funding = funding_by_bar[sp.test_idx]
+            strat = build_strategy(family, params)
+            sim = run_backtest(
+                candles=test_df,
+                funding_rates_by_bar=test_funding,
+                strategy=strat,
+                timeframe=timeframe,
+                backtest_cfg=cfg,
+            )
+            fold_sims.append(sim)
+
+        sim = _build_oos_simulation(
+            fold_sims=fold_sims,
+            initial_equity=float(cfg.get("initial_equity", backtest_cfg.get("initial_equity", 10_000.0))),
         )
         metrics = compute_metrics(
             equity_curve=sim.equity_curve,
             trades=sim.trades,
-            bars_per_year=int(sim.summary.get("bars_per_year", 1)),
+            bars_per_year=_bars_per_year_from_cfg(timeframe=timeframe, cfg=cfg),
         )
         return metrics, sim
 
@@ -315,6 +380,7 @@ def _evaluate_candidate(
         ]
 
     fold_metrics: list[dict[str, Any]] = []
+    fold_sims: list[SimulationResult] = []
     for sp in splits:
         test_df = bundle.candles.iloc[sp.test_idx].reset_index(drop=True)
         test_funding = funding_by_bar[sp.test_idx]
@@ -327,6 +393,7 @@ def _evaluate_candidate(
             timeframe=spec.timeframe,
             backtest_cfg=backtest_cfg,
         )
+        fold_sims.append(sim)
         met = compute_metrics(
             equity_curve=sim.equity_curve,
             trades=sim.trades,
@@ -336,20 +403,29 @@ def _evaluate_candidate(
         fold_metrics.append(met)
 
     aggregate = _aggregate_fold_metrics(fold_metrics)
+    oos_sim = _build_oos_simulation(
+        fold_sims=fold_sims,
+        initial_equity=float(backtest_cfg.get("initial_equity", 10_000.0)),
+    )
+    base_metrics = compute_metrics(
+        equity_curve=oos_sim.equity_curve,
+        trades=oos_sim.trades,
+        bars_per_year=_bars_per_year_from_cfg(timeframe=spec.timeframe, cfg=backtest_cfg),
+    )
 
     runner = _runner_for_candidate(
         bundle=bundle,
         funding_by_bar=funding_by_bar,
+        splits=splits,
         family=spec.family,
         timeframe=spec.timeframe,
         backtest_cfg=backtest_cfg,
     )
-    base_metrics, base_sim = runner(spec.params, backtest_cfg)
 
     stress = run_stress_suite(
         base_params=spec.params,
         base_metrics=base_metrics,
-        base_sim=base_sim,
+        base_sim=oos_sim,
         backtest_cfg=backtest_cfg,
         runner=runner,
     )
@@ -378,8 +454,8 @@ def _evaluate_candidate(
         "gates": gates,
         "score_raw": raw,
         "score_adjusted": raw,
-        "equity_curve": base_sim.equity_curve,
-        "trades": base_sim.trades,
+        "equity_curve": oos_sim.equity_curve,
+        "trades": oos_sim.trades,
     }
 
 
@@ -431,6 +507,7 @@ def _write_run_artifacts(
                 "max_drawdown": m.get("max_drawdown"),
                 "trades_count": m.get("trades_count"),
                 "turnover": m.get("turnover"),
+                "turnover_ratio": m.get("turnover_ratio"),
                 "win_loss_ratio": m.get("win_loss_ratio"),
                 "return_skewness": m.get("return_skewness"),
                 "return_excess_kurtosis": m.get("return_excess_kurtosis"),

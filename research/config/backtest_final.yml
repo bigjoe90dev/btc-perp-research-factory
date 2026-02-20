@@ -28,11 +28,11 @@ position_sizing:
 
 cv:
   mode: walk_forward
-  train_bars: 400
-  test_bars: 160
-  step_bars: 160
-  purge_bars: 5
-  embargo_bars: 5
+  train_bars: 8760
+  test_bars: 1440
+  step_bars: 1440
+  purge_bars: 24
+  embargo_bars: 24
 
 candidate_generation:
   default_count: 300
@@ -72,7 +72,7 @@ gates:
   min_win_loss_ratio: 0.8
   enable_correlation_gate: true
   max_return_correlation: 0.75
-  correlation_use_absolute: false
+  correlation_use_absolute: true
   correlation_min_points: 100
   require_positive_oos_window: true
   min_oos_trades: 5

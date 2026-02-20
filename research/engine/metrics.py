@@ -46,6 +46,7 @@ def compute_metrics(
     eq = equity_curve.copy()
     eq = eq.sort_values("ts_utc").reset_index(drop=True)
     eq["ret"] = eq["equity"].pct_change().fillna(0.0)
+    starting_equity = float(eq["equity"].iloc[0])
 
     total_return = _safe_div(float(eq["equity"].iloc[-1] - eq["equity"].iloc[0]), float(eq["equity"].iloc[0]))
     cummax = eq["equity"].cummax()
@@ -70,6 +71,7 @@ def compute_metrics(
 
     exposure = float((eq["gross_notional"] > 0).mean()) if "gross_notional" in eq.columns else 0.0
     turnover = float(eq.get("trade_notional", pd.Series([0.0])).sum())
+    turnover_ratio = _safe_div(turnover, abs(starting_equity))
     time_in_market = exposure
 
     eq_daily = eq.set_index("ts_utc")["equity"].resample("1D").last().dropna()
@@ -117,6 +119,7 @@ def compute_metrics(
         "trades_count": trades_count,
         "exposure": exposure,
         "turnover": turnover,
+        "turnover_ratio": turnover_ratio,
         "profit_factor": profit_factor,
         "expectancy": expectancy,
         "avg_win": avg_win,
