@@ -124,6 +124,20 @@ def load_dataset_from_manifest(
     manifest = _read_yaml(manifest_path)
     ds = _find_dataset(manifest, dataset_key)
 
+    required_symbol = str(data_cfg.get("required_symbol", "")).strip().upper()
+    dataset_symbol = str(ds.get("symbol", "")).strip().upper()
+    if required_symbol and dataset_symbol != required_symbol:
+        raise RuntimeError(
+            f"Dataset symbol mismatch for {dataset_key}: required={required_symbol}, found={dataset_symbol or 'UNKNOWN'}"
+        )
+
+    required_market = str(data_cfg.get("required_market", "")).strip().lower()
+    dataset_market = str(ds.get("market", "")).strip().lower()
+    if required_market and dataset_market != required_market:
+        raise RuntimeError(
+            f"Dataset market mismatch for {dataset_key}: required={required_market}, found={dataset_market or 'UNKNOWN'}"
+        )
+
     canonical_file = Path(str(ds.get("canonical_file")))
     funding_file = Path(str(ds.get("funding_file"))) if ds.get("funding_file") else None
 

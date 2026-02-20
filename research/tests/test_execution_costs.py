@@ -22,6 +22,7 @@ def test_execution_applies_fee_and_slippage() -> None:
         fee_bps=10.0,
         slippage_cfg={"bps_base": 0.0, "bps_per_vol": 0.0, "vol_proxy": "candle_range"},
         execution_cfg={},
+        slippage_bar=bar,
     )
     assert fill.price == 100.0
     assert fill.fee_paid == 0.1

@@ -17,7 +17,12 @@ def raw_score(metrics: dict, n_params: int, cfg: dict) -> float:
     base = w_sh * sharpe + w_so * sortino + w_rt * ret - w_dd * dd
 
     c_pen = float(cfg.get("complexity_penalty_per_param", 0.02)) * max(n_params, 0)
-    turnover_signal = float(metrics.get("turnover_ratio", metrics.get("turnover", 0.0)))
+    turnover_signal = float(
+        metrics.get(
+            "turnover_ratio_annualized",
+            metrics.get("turnover_ratio", metrics.get("turnover", 0.0)),
+        )
+    )
     t_pen = float(cfg.get("turnover_penalty", 0.0)) * max(turnover_signal, 0.0)
     skew = float(metrics.get("return_skewness", 0.0))
     kurt = float(metrics.get("return_excess_kurtosis", 0.0))

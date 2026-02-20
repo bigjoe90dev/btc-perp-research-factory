@@ -72,6 +72,7 @@ def compute_metrics(
     exposure = float((eq["gross_notional"] > 0).mean()) if "gross_notional" in eq.columns else 0.0
     turnover = float(eq.get("trade_notional", pd.Series([0.0])).sum())
     turnover_ratio = _safe_div(turnover, abs(starting_equity))
+    turnover_ratio_annualized = turnover_ratio * _safe_div(float(max(bars_per_year, 1)), float(max(len(eq), 1)))
     time_in_market = exposure
 
     eq_daily = eq.set_index("ts_utc")["equity"].resample("1D").last().dropna()
@@ -120,6 +121,7 @@ def compute_metrics(
         "exposure": exposure,
         "turnover": turnover,
         "turnover_ratio": turnover_ratio,
+        "turnover_ratio_annualized": turnover_ratio_annualized,
         "profit_factor": profit_factor,
         "expectancy": expectancy,
         "avg_win": avg_win,
