@@ -33,6 +33,8 @@ class LLMGeneratorConfig:
     openrouter_base_url: str
     timeout_seconds: float
     max_retries: int
+    temperature: float
+    top_p: float
     lanes: list[ModelLane]
     synthesis_model_id: str
     fail_closed_on_missing_grok: bool
@@ -85,6 +87,8 @@ def llm_config_from_backtest(backtest_cfg: dict[str, Any]) -> LLMGeneratorConfig
     base_url = str(api_cfg.get("base_url", "https://openrouter.ai/api/v1"))
     timeout_seconds = _as_float(api_cfg.get("timeout_seconds", 60.0), 60.0)
     max_retries = max(_as_int(api_cfg.get("max_retries", 3), 3), 0)
+    temperature = _as_float(api_cfg.get("temperature", 0.0), 0.0)
+    top_p = _as_float(api_cfg.get("top_p", 1.0), 1.0)
 
     lanes_cfg = root.get("model_lanes", {}) if isinstance(root.get("model_lanes"), dict) else {}
 
@@ -136,6 +140,8 @@ def llm_config_from_backtest(backtest_cfg: dict[str, Any]) -> LLMGeneratorConfig
         openrouter_base_url=base_url,
         timeout_seconds=timeout_seconds,
         max_retries=max_retries,
+        temperature=temperature,
+        top_p=top_p,
         lanes=lanes,
         synthesis_model_id=synthesis_model_id,
         fail_closed_on_missing_grok=fail_closed_on_missing_grok,

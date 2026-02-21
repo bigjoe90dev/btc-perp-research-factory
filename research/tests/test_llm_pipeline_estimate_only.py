@@ -39,3 +39,4 @@ def test_generate_candidates_estimate_only_without_data(monkeypatch, tmp_path: P
     assert result.candidates == []
     assert result.candidate_file.exists()
     assert "estimated_total_cost_usd" in result.manifest
+    assert any("pricing_all_zero" in x for x in result.manifest.get("warnings", []))

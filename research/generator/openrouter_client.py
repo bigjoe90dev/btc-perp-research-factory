@@ -38,6 +38,8 @@ class OpenRouterClient:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
     ) -> LLMResponse:
         url = f"{self.base_url}/chat/completions"
         payload = {
@@ -46,7 +48,8 @@ class OpenRouterClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.7,
+            "temperature": float(temperature),
+            "top_p": float(top_p),
             "max_tokens": int(max_tokens),
             "response_format": {"type": "json_object"},
         }

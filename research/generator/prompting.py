@@ -25,6 +25,8 @@ def build_synthesis_prompt(raw_ideas_json: str, top_n: int) -> str:
         "You are the synthesis judge.\n"
         "Input contains candidate ideas from multiple models.\n"
         "Select the highest-quality, diverse strategies likely to survive strict BTC perp gates.\n"
+        "Do not invent any new strategy.\n"
+        "Return only strategies that already exist in the INPUT list.\n"
         "Output JSON with key 'strategies' only.\n"
         f"Return exactly {int(top_n)} strategies when possible.\n\n"
         "INPUT:\n"

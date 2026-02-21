@@ -108,6 +108,8 @@ llm_generation:
     base_url: https://openrouter.ai/api/v1
     timeout_seconds: 60
     max_retries: 3
+    temperature: 0.0
+    top_p: 1.0
   model_lanes:
     minimax:
       model_id: minimax/minimax-m2.5

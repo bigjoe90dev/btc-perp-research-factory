@@ -141,6 +141,36 @@ def _to_idea_rows(ideas: list[ParsedIdea]) -> list[dict[str, Any]]:
     ]
 
 
+def _idea_fingerprint(idea: ParsedIdea) -> tuple[str, str]:
+    return (idea.family.strip().lower(), idea.name.strip().lower())
+
+
+def _restrict_ideas_to_source(
+    candidate_ideas: list[ParsedIdea],
+    source_ideas: list[ParsedIdea],
+) -> tuple[list[ParsedIdea], list[str]]:
+    allowed = {_idea_fingerprint(x) for x in source_ideas}
+    kept: list[ParsedIdea] = []
+    rejects: list[str] = []
+    for idx, idea in enumerate(candidate_ideas):
+        if _idea_fingerprint(idea) in allowed:
+            kept.append(idea)
+        else:
+            rejects.append(f"synthesis_invented_strategy:{idx}:{idea.family}:{idea.name}")
+    return kept, rejects
+
+
+def _pricing_is_all_zero(cfg: LLMGeneratorConfig) -> bool:
+    if float(cfg.pricing.default_input_per_1k) != 0.0 or float(cfg.pricing.default_output_per_1k) != 0.0:
+        return False
+    for rates in cfg.pricing.by_model.values():
+        if not isinstance(rates, dict):
+            continue
+        if float(rates.get("input_per_1k", 0.0)) != 0.0 or float(rates.get("output_per_1k", 0.0)) != 0.0:
+            return False
+    return True
+
+
 def generate_candidates_with_llm(
     data_config_path: str,
     backtest_cfg: dict[str, Any],
@@ -214,6 +244,11 @@ def generate_candidates_with_llm(
             prompt_tokens=prompt_tokens_est,
             completion_tokens=completion_tokens_est,
         )
+    warnings: list[str] = []
+    if _pricing_is_all_zero(cfg):
+        warnings.append(
+            "pricing_all_zero: llm_generation.pricing values are all 0.0; cost reporting will be zero unless configured"
+        )
 
     if estimate_only:
         manifest = {
@@ -226,6 +261,7 @@ def generate_candidates_with_llm(
             "estimated_completion_tokens_per_call": completion_tokens_est,
             "estimated_total_cost_usd": round(estimated_cost, 6),
             "model_plan": estimated_calls,
+            "warnings": warnings,
         }
         (artefact_dir / "generation_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         out = Path(out_path) if out_path else artefact_dir / "candidates_validated.json"
@@ -258,6 +294,8 @@ def generate_candidates_with_llm(
             system_prompt="You are a strict JSON-only BTC perp strategy generator.",
             user_prompt=prompt,
             max_tokens=cfg.budget.max_completion_tokens_per_call,
+            temperature=cfg.temperature,
+            top_p=cfg.top_p,
         )
         total_completion_tokens += int(resp.completion_tokens)
         if total_completion_tokens > cfg.budget.max_total_completion_tokens:
@@ -280,6 +318,11 @@ def generate_candidates_with_llm(
                 "completion_tokens": resp.completion_tokens,
                 "content": resp.content,
                 "usage": resp.raw.get("usage", {}),
+                "request_settings": {
+                    "temperature": cfg.temperature,
+                    "top_p": cfg.top_p,
+                    "max_tokens": cfg.budget.max_completion_tokens_per_call,
+                },
             }
         )
 
@@ -297,6 +340,8 @@ def generate_candidates_with_llm(
         system_prompt="You are a strict JSON-only synthesis reviewer for BTC perp strategies.",
         user_prompt=synthesis_prompt,
         max_tokens=cfg.budget.max_completion_tokens_per_call,
+        temperature=cfg.temperature,
+        top_p=cfg.top_p,
     )
     total_completion_tokens += int(synth_resp.completion_tokens)
     if total_completion_tokens > cfg.budget.max_total_completion_tokens:
@@ -312,6 +357,11 @@ def generate_candidates_with_llm(
             "completion_tokens": synth_resp.completion_tokens,
             "content": synth_resp.content,
             "usage": synth_resp.raw.get("usage", {}),
+            "request_settings": {
+                "temperature": cfg.temperature,
+                "top_p": cfg.top_p,
+                "max_tokens": cfg.budget.max_completion_tokens_per_call,
+            },
         }
     )
     curated_ideas, synth_reasons = parse_model_payload(
@@ -322,18 +372,37 @@ def generate_candidates_with_llm(
     reject_reasons.extend([f"synthesis:{x}" for x in synth_reasons])
 
     if cfg.fail_closed_on_missing_grok and not curated_ideas:
-        raise RuntimeError("Grok synthesis returned no valid ideas; fail-closed policy active")
+        raise RuntimeError(
+            f"Synthesis model returned no valid ideas: model={cfg.synthesis_model_id}, fail-closed policy active"
+        )
+    if not curated_ideas:
+        curated_ideas = parsed_ideas[: cfg.top_n_final]
+
+    # Guard against synthesis-stage hallucinations by allowing only items that appeared
+    # in the generation round.
+    curated_ideas, source_rejects = _restrict_ideas_to_source(
+        candidate_ideas=curated_ideas,
+        source_ideas=parsed_ideas,
+    )
+    reject_reasons.extend(source_rejects)
+    if cfg.fail_closed_on_missing_grok and not curated_ideas:
+        raise RuntimeError(
+            f"Synthesis model proposed no source-matching ideas: model={cfg.synthesis_model_id}, fail-closed policy active"
+        )
     if not curated_ideas:
         curated_ideas = parsed_ideas[: cfg.top_n_final]
 
     if cfg.improvement_round_enabled and cfg.improvement_calls > 0:
         improve_input = json.dumps({"strategies": _to_idea_rows(curated_ideas)}, ensure_ascii=True)
         for _ in range(cfg.improvement_calls):
+            prev_curated = curated_ideas
             improve_resp = client.chat_json(
                 model_id=cfg.improvement_model_id,
                 system_prompt="You are a strict JSON-only strategy improver.",
                 user_prompt=build_improvement_prompt(curated_ideas_json=improve_input),
                 max_tokens=cfg.budget.max_completion_tokens_per_call,
+                temperature=cfg.temperature,
+                top_p=cfg.top_p,
             )
             total_completion_tokens += int(improve_resp.completion_tokens)
             if total_completion_tokens > cfg.budget.max_total_completion_tokens:
@@ -349,6 +418,11 @@ def generate_candidates_with_llm(
                     "completion_tokens": improve_resp.completion_tokens,
                     "content": improve_resp.content,
                     "usage": improve_resp.raw.get("usage", {}),
+                    "request_settings": {
+                        "temperature": cfg.temperature,
+                        "top_p": cfg.top_p,
+                        "max_tokens": cfg.budget.max_completion_tokens_per_call,
+                    },
                 }
             )
             improved, improve_reasons = parse_model_payload(
@@ -358,8 +432,18 @@ def generate_candidates_with_llm(
             )
             reject_reasons.extend([f"improve:{x}" for x in improve_reasons])
             if improved:
-                curated_ideas = improved
-                improve_input = json.dumps({"strategies": _to_idea_rows(curated_ideas)}, ensure_ascii=True)
+                improved_drafts, _ = ideas_to_candidate_drafts(
+                    ideas=improved,
+                    requested_timeframes=timeframes,
+                    rules_version=rules_version,
+                    dataset_key=dataset_key,
+                )
+                if improved_drafts:
+                    curated_ideas = improved
+                    improve_input = json.dumps({"strategies": _to_idea_rows(curated_ideas)}, ensure_ascii=True)
+                else:
+                    curated_ideas = prev_curated
+                    reject_reasons.append("improve:adapter_empty_restore_previous")
 
     drafts, adapter_rejects = ideas_to_candidate_drafts(
         ideas=curated_ideas,
@@ -391,17 +475,21 @@ def generate_candidates_with_llm(
 
     out_candidate_path = Path(out_path) if out_path else artefact_dir / "candidates_validated.json"
     out_candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    validated_payload = {
+        "generation_id": generation_id,
+        "candidates": [_candidate_to_json(s) for s in specs],
+    }
     out_candidate_path.write_text(
-        json.dumps(
-            {
-                "generation_id": generation_id,
-                "candidates": [_candidate_to_json(s) for s in specs],
-            },
-            indent=2,
-            ensure_ascii=True,
-        ),
+        json.dumps(validated_payload, indent=2, ensure_ascii=True),
         encoding="utf-8",
     )
+    # Keep an authoritative canonical copy in the artefact directory.
+    artefact_validated_path = artefact_dir / "candidates_validated.json"
+    if artefact_validated_path.resolve() != out_candidate_path.resolve():
+        artefact_validated_path.write_text(
+            json.dumps(validated_payload, indent=2, ensure_ascii=True),
+            encoding="utf-8",
+        )
 
     (artefact_dir / "rejections.json").write_text(
         json.dumps(reject_reasons, indent=2, ensure_ascii=True),
@@ -438,6 +526,7 @@ def generate_candidates_with_llm(
             "estimated_total_cost_usd": round(estimated_cost, 6),
             "actual_total_cost_usd": round(actual_cost, 6),
         },
+        "warnings": warnings,
         "outputs": {
             "candidate_count": len(specs),
             "raw_ideas_count": len(parsed_ideas),
@@ -451,7 +540,7 @@ def generate_candidates_with_llm(
         encoding="utf-8",
     )
 
-    (artefact_dir / "candidates_validated.json").write_text(
+    (artefact_dir / "candidates_validated_enriched.json").write_text(
         json.dumps(
             {
                 "generation_id": generation_id,

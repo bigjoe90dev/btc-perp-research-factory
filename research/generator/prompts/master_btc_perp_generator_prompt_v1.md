@@ -26,7 +26,7 @@ You are an elite BTC perpetual quant researcher.
 {data_summary_json_block}
 
 ## Task
-Generate exactly 8 distinct strategies.
+Generate distinct strategies and follow the runtime count constraint appended by the caller.
 Each strategy must include:
 - family
 - name

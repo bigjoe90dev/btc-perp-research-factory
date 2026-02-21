@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ from research.reports.charts import write_equity_snapshots
 from research.reports.checklist import write_checklist_artifacts
 from research.reports.daily import write_daily_report
 from research.strategies.generator import generate_candidates
-from research.strategies.registry import build_strategy
+from research.strategies.registry import available_families, build_strategy
 
 
 def _read_yaml(path: str | Path) -> dict[str, Any]:
@@ -123,6 +124,31 @@ def _load_candidates_from_file(path: str | Path) -> list[CandidateSpec]:
         except KeyError as exc:
             raise ValueError(f"Candidate row missing key at index {i}: {exc}") from exc
     return out
+
+
+def _validate_candidate_specs_for_run(
+    candidates: list[CandidateSpec],
+    dataset_key: str,
+    rules_version: str,
+    allowed_timeframes: set[str],
+) -> None:
+    family_allowlist = set(available_families())
+    for i, spec in enumerate(candidates):
+        if spec.dataset_key != dataset_key:
+            raise RuntimeError(
+                f"Candidate file dataset_key mismatch at index={i}: expected={dataset_key}, got={spec.dataset_key}"
+            )
+        if spec.rules_version != rules_version:
+            raise RuntimeError(
+                f"Candidate file rules_version mismatch at index={i}: expected={rules_version}, got={spec.rules_version}"
+            )
+        if spec.family not in family_allowlist:
+            raise RuntimeError(f"Candidate file contains unknown family at index={i}: {spec.family}")
+        if spec.timeframe not in allowed_timeframes:
+            raise RuntimeError(
+                f"Candidate file timeframe not requested at index={i}: timeframe={spec.timeframe}, "
+                f"allowed={sorted(allowed_timeframes)}"
+            )
 
 
 def _parse_ts_or_none(value: Any) -> pd.Timestamp | None:
@@ -337,6 +363,9 @@ def _doctor_data(data_cfg_path: str) -> None:
             print(f"  - missing: {p}")
     else:
         print("- status: OK (required files found)")
+
+    key_present = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+    print(f"- OPENROUTER_API_KEY: {'present' if key_present else 'missing'}")
 
     print("\nReady to generate? Run:")
     print(
@@ -685,6 +714,12 @@ def _execute_run(
     rules_version = str(backtest_cfg.get("rules_version", "v1"))
     if candidate_file:
         candidates = _load_candidates_from_file(candidate_file)
+        _validate_candidate_specs_for_run(
+            candidates=candidates,
+            dataset_key=dataset_key,
+            rules_version=rules_version,
+            allowed_timeframes={str(x) for x in timeframes},
+        )
     else:
         candidates = generate_candidates(
             families=families,
@@ -874,6 +909,8 @@ def _execute_generate_candidates(
         print(f"Generation ID: {result.generation_id}")
         print(f"Manifest: {result.artefact_dir / 'generation_manifest.json'}")
         print(f"Estimated candidate file: {result.candidate_file}")
+        for w in result.manifest.get("warnings", []):
+            print(f"Warning: {w}")
         return result
 
     print("LLM candidate generation complete.")
@@ -881,6 +918,8 @@ def _execute_generate_candidates(
     print(f"Candidates: {len(result.candidates)}")
     print(f"Candidate file: {result.candidate_file}")
     print(f"Artefacts: {result.artefact_dir}")
+    for w in result.manifest.get("warnings", []):
+        print(f"Warning: {w}")
     print("Run backtest with:")
     print(
         "python -m research.cli run "
