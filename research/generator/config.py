@@ -16,6 +16,7 @@ class ModelLane:
 class BudgetConfig:
     max_total_calls: int = 12
     max_completion_tokens_per_call: int = 1800
+    max_total_prompt_tokens: int = 30000
     max_total_completion_tokens: int = 22000
 
 
@@ -123,6 +124,7 @@ def llm_config_from_backtest(backtest_cfg: dict[str, Any]) -> LLMGeneratorConfig
     budget = BudgetConfig(
         max_total_calls=max(_as_int(budget_cfg.get("max_total_calls", 12), 12), 1),
         max_completion_tokens_per_call=max(_as_int(budget_cfg.get("max_completion_tokens_per_call", 1800), 1800), 1),
+        max_total_prompt_tokens=max(_as_int(budget_cfg.get("max_total_prompt_tokens", 30000), 30000), 1),
         max_total_completion_tokens=max(_as_int(budget_cfg.get("max_total_completion_tokens", 22000), 22000), 1),
     )
 

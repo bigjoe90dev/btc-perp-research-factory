@@ -131,6 +131,7 @@ llm_generation:
   limits:
     max_total_calls: 12
     max_completion_tokens_per_call: 1800
+    max_total_prompt_tokens: 30000
     max_total_completion_tokens: 22000
   generation:
     top_n_final: 12
@@ -141,5 +142,18 @@ llm_generation:
     model_id: deepseek/deepseek-v3.2
     calls: 1
   pricing:
-    default_input_per_1k: 0.0
-    default_output_per_1k: 0.0
+    default_input_per_1k: 0.00030
+    default_output_per_1k: 0.00110
+    by_model:
+      minimax/minimax-m2.5:
+        input_per_1k: 0.00030
+        output_per_1k: 0.00110
+      moonshotai/kimi-k2.5:
+        input_per_1k: 0.00023
+        output_per_1k: 0.00300
+      deepseek/deepseek-v3.2:
+        input_per_1k: 0.00027
+        output_per_1k: 0.00110
+      x-ai/grok-4.1-fast:
+        input_per_1k: 0.00020
+        output_per_1k: 0.00050

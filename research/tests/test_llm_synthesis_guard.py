@@ -33,3 +33,14 @@ def test_restrict_ideas_to_source_rejects_invented_entries() -> None:
     assert len(kept) == 1
     assert kept[0].name == "alpha"
     assert any("synthesis_invented_strategy" in r for r in rejects)
+
+
+def test_restrict_ideas_to_source_uses_original_source_params() -> None:
+    source = [_idea("alpha")]
+    mutated = _idea("alpha")
+    mutated.params["breakout_lookback"] = 200
+
+    kept, rejects = _restrict_ideas_to_source(candidate_ideas=[mutated], source_ideas=source)
+    assert rejects == []
+    assert len(kept) == 1
+    assert kept[0].params["breakout_lookback"] == 50

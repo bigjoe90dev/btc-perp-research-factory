@@ -59,8 +59,10 @@ _FAMILY_LIMITS: dict[str, dict[str, tuple[float, float, type]]] = {
 }
 
 
-def _choose_scalar(v: Any) -> Any:
+def _choose_scalar(v: Any, *, allow_param_ranges: bool) -> Any:
     if isinstance(v, list):
+        if not allow_param_ranges:
+            raise ValueError("param_ranges_not_allowed")
         if len(v) >= 2:
             return v[1]
         if v:
@@ -74,16 +76,28 @@ def _coerce_value(raw: Any, out_type: type) -> float | int:
     return float(raw)
 
 
-def _materialize_params(family: str, params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def _materialize_params(
+    family: str,
+    params: dict[str, Any],
+    *,
+    allow_param_ranges: bool,
+) -> tuple[dict[str, Any] | None, str | None]:
     limits = _FAMILY_LIMITS.get(family)
     if limits is None:
         return None, f"unsupported_family:{family}"
+
+    unknown = sorted(set(params.keys()) - set(limits.keys()))
+    if unknown:
+        return None, f"unknown_param:{unknown[0]}"
 
     concrete: dict[str, Any] = {}
     for k, (lo, hi, out_type) in limits.items():
         if k not in params:
             return None, f"missing_param:{k}"
-        raw = _choose_scalar(params[k])
+        try:
+            raw = _choose_scalar(params[k], allow_param_ranges=allow_param_ranges)
+        except ValueError:
+            return None, f"param_range_not_allowed:{k}"
         try:
             val = _coerce_value(raw, out_type)
         except (TypeError, ValueError):
@@ -99,6 +113,13 @@ def _materialize_params(family: str, params: dict[str, Any]) -> tuple[dict[str, 
     return concrete, None
 
 
+def validate_family_params_for_candidate_file(
+    family: str,
+    params: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    return _materialize_params(family=family, params=params, allow_param_ranges=False)
+
+
 def ideas_to_candidate_drafts(
     ideas: list[ParsedIdea],
     requested_timeframes: list[str],
@@ -110,7 +131,7 @@ def ideas_to_candidate_drafts(
 
     req_tfs = [str(x) for x in requested_timeframes]
     for idx, idea in enumerate(ideas):
-        params, err = _materialize_params(idea.family, idea.params)
+        params, err = _materialize_params(idea.family, idea.params, allow_param_ranges=True)
         if err is not None:
             rejects.append(f"idea_{idx}:{err}")
             continue

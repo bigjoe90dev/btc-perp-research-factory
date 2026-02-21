@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from research.cli import _load_candidates_from_file, _validate_candidate_specs_for_run
+from research.strategies.candidate_ids import strategy_id
 
 
 def test_load_candidates_from_file_dict_format(tmp_path: Path) -> None:
@@ -94,6 +95,95 @@ def test_validate_candidate_specs_for_run_rejects_rules_version_mismatch(tmp_pat
 
     rows = _load_candidates_from_file(p)
     with pytest.raises(RuntimeError, match="rules_version mismatch"):
+        _validate_candidate_specs_for_run(
+            candidates=rows,
+            dataset_key="BTC_BITMEX_PERP_1M",
+            rules_version="v1",
+            allowed_timeframes={"1h"},
+        )
+
+
+def test_load_candidates_from_file_rejects_estimate_only_payload(tmp_path: Path) -> None:
+    p = tmp_path / "candidates.json"
+    payload = {
+        "generation_id": "gen_test",
+        "estimate_only": True,
+        "candidates": [],
+    }
+    p.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="estimate-only"):
+        _load_candidates_from_file(p)
+
+
+def test_validate_candidate_specs_for_run_rejects_invalid_params(tmp_path: Path) -> None:
+    p = tmp_path / "candidates.json"
+    params = {
+        "breakout_lookback": -1,
+        "atr_lookback": 20,
+        "atr_min_pct": 0.001,
+        "time_stop_bars": 48,
+        "trailing_stop_atr": 2.0,
+    }
+    payload = {
+        "generation_id": "gen_test",
+        "candidates": [
+            {
+                "strategy_id": "abc123",
+                "family": "momentum_breakout",
+                "timeframe": "1h",
+                "params": params,
+                "rules_version": "v1",
+                "dataset_key": "BTC_BITMEX_PERP_1M",
+            }
+        ],
+    }
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    rows = _load_candidates_from_file(p)
+
+    with pytest.raises(RuntimeError, match="invalid params"):
+        _validate_candidate_specs_for_run(
+            candidates=rows,
+            dataset_key="BTC_BITMEX_PERP_1M",
+            rules_version="v1",
+            allowed_timeframes={"1h"},
+        )
+
+
+def test_validate_candidate_specs_for_run_rejects_strategy_id_mismatch(tmp_path: Path) -> None:
+    p = tmp_path / "candidates.json"
+    params = {
+        "breakout_lookback": 50,
+        "atr_lookback": 20,
+        "atr_min_pct": 0.001,
+        "time_stop_bars": 48,
+        "trailing_stop_atr": 2.0,
+    }
+    payload = {
+        "generation_id": "gen_test",
+        "candidates": [
+            {
+                "strategy_id": "wrong_id",
+                "family": "momentum_breakout",
+                "timeframe": "1h",
+                "params": params,
+                "rules_version": "v1",
+                "dataset_key": "BTC_BITMEX_PERP_1M",
+            }
+        ],
+    }
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    rows = _load_candidates_from_file(p)
+    good_id = strategy_id(
+        family="momentum_breakout",
+        timeframe="1h",
+        params=params,
+        rules_version="v1",
+        dataset_key="BTC_BITMEX_PERP_1M",
+    )
+    assert good_id != "wrong_id"
+
+    with pytest.raises(RuntimeError, match="strategy_id mismatch"):
         _validate_candidate_specs_for_run(
             candidates=rows,
             dataset_key="BTC_BITMEX_PERP_1M",

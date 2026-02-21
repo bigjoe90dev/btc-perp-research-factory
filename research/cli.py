@@ -20,10 +20,12 @@ from research.engine.scoring import adjusted_score_for_multiple_testing, raw_sco
 from research.engine.simulator import run_backtest
 from research.engine.stress import run_stress_suite
 from research.engine.types import CandidateSpec, SimulationResult
+from research.generator.adapter import validate_family_params_for_candidate_file
 from research.generator.pipeline import GenerationResult, generate_candidates_with_llm
 from research.reports.charts import write_equity_snapshots
 from research.reports.checklist import write_checklist_artifacts
 from research.reports.daily import write_daily_report
+from research.strategies.candidate_ids import strategy_id
 from research.strategies.generator import generate_candidates
 from research.strategies.registry import available_families, build_strategy
 
@@ -102,6 +104,10 @@ def _serialize_candidate(spec: Any) -> dict[str, Any]:
 
 def _load_candidates_from_file(path: str | Path) -> list[CandidateSpec]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and bool(raw.get("estimate_only", False)):
+        raise ValueError(
+            f"Candidate file was produced by --estimate-only and contains no generated candidates: {path}"
+        )
     rows = raw.get("candidates", raw) if isinstance(raw, dict) else raw
     if not isinstance(rows, list):
         raise ValueError(f"Invalid candidate file format: {path}")
@@ -148,6 +154,22 @@ def _validate_candidate_specs_for_run(
             raise RuntimeError(
                 f"Candidate file timeframe not requested at index={i}: timeframe={spec.timeframe}, "
                 f"allowed={sorted(allowed_timeframes)}"
+            )
+        concrete_params, err = validate_family_params_for_candidate_file(family=spec.family, params=spec.params)
+        if err is not None or concrete_params is None:
+            raise RuntimeError(
+                f"Candidate file has invalid params at index={i}: family={spec.family}, reason={err or 'unknown'}"
+            )
+        expected_id = strategy_id(
+            family=spec.family,
+            timeframe=spec.timeframe,
+            params=concrete_params,
+            rules_version=spec.rules_version,
+            dataset_key=spec.dataset_key,
+        )
+        if spec.strategy_id != expected_id:
+            raise RuntimeError(
+                f"Candidate file strategy_id mismatch at index={i}: expected={expected_id}, got={spec.strategy_id}"
             )
 
 

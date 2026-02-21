@@ -27,6 +27,8 @@ def build_synthesis_prompt(raw_ideas_json: str, top_n: int) -> str:
         "Select the highest-quality, diverse strategies likely to survive strict BTC perp gates.\n"
         "Do not invent any new strategy.\n"
         "Return only strategies that already exist in the INPUT list.\n"
+        "Preserve original params for selected strategies.\n"
+        "Keep expected_turnover values in {low, medium, medium_high, high}.\n"
         "Output JSON with key 'strategies' only.\n"
         f"Return exactly {int(top_n)} strategies when possible.\n\n"
         "INPUT:\n"

@@ -38,8 +38,8 @@ def _token_estimate(text: str) -> int:
     return max(int(math.ceil(len(text) / 4.0)), 1)
 
 
-def _is_grok(model_id: str) -> bool:
-    return "grok" in model_id.lower()
+def _is_required_grok_lane(lane_name: str) -> bool:
+    return lane_name.strip().lower() == "grok_generate"
 
 
 def _pricing_rates(cfg: LLMGeneratorConfig, model_id: str) -> tuple[float, float]:
@@ -149,15 +149,69 @@ def _restrict_ideas_to_source(
     candidate_ideas: list[ParsedIdea],
     source_ideas: list[ParsedIdea],
 ) -> tuple[list[ParsedIdea], list[str]]:
-    allowed = {_idea_fingerprint(x) for x in source_ideas}
+    source_by_fingerprint: dict[tuple[str, str], ParsedIdea] = {}
+    for src in source_ideas:
+        fp = _idea_fingerprint(src)
+        if fp not in source_by_fingerprint:
+            source_by_fingerprint[fp] = src
+
     kept: list[ParsedIdea] = []
     rejects: list[str] = []
     for idx, idea in enumerate(candidate_ideas):
-        if _idea_fingerprint(idea) in allowed:
-            kept.append(idea)
+        source = source_by_fingerprint.get(_idea_fingerprint(idea))
+        if source is not None:
+            # Keep the original generated idea object to prevent synthesis/improvement
+            # steps from mutating parameters while reusing the same family/name.
+            kept.append(source)
         else:
             rejects.append(f"synthesis_invented_strategy:{idx}:{idea.family}:{idea.name}")
     return kept, rejects
+
+
+def _build_data_summary_payload(
+    *,
+    data_config_path: str,
+    timeframes: list[str],
+    estimate_only: bool,
+) -> DataSummary:
+    if len(timeframes) == 1:
+        tf = str(timeframes[0])
+        try:
+            return build_data_summary(data_config_path=data_config_path, timeframe=tf)
+        except Exception as exc:  # noqa: BLE001
+            if not estimate_only:
+                raise
+            return DataSummary(
+                timeframe=tf,
+                summary={
+                    "timeframe": tf,
+                    "status": "data_unavailable_for_estimate",
+                    "error": str(exc),
+                },
+            )
+
+    summaries: dict[str, dict[str, Any]] = {}
+    for raw_tf in timeframes:
+        tf = str(raw_tf)
+        try:
+            ds = build_data_summary(data_config_path=data_config_path, timeframe=tf)
+            summaries[tf] = ds.summary
+        except Exception as exc:  # noqa: BLE001
+            if not estimate_only:
+                raise
+            summaries[tf] = {
+                "timeframe": tf,
+                "status": "data_unavailable_for_estimate",
+                "error": str(exc),
+            }
+
+    return DataSummary(
+        timeframe="multi",
+        summary={
+            "requested_timeframes": [str(x) for x in timeframes],
+            "timeframe_summaries": summaries,
+        },
+    )
 
 
 def _pricing_is_all_zero(cfg: LLMGeneratorConfig) -> bool:
@@ -185,20 +239,11 @@ def generate_candidates_with_llm(
     if not timeframes:
         raise ValueError("timeframes required")
 
-    try:
-        data_summary = build_data_summary(data_config_path=data_config_path, timeframe=str(timeframes[0]))
-    except Exception as exc:  # noqa: BLE001
-        if not estimate_only:
-            raise
-        # Allow estimate-only budgeting before local data is downloaded.
-        data_summary = DataSummary(
-            timeframe=str(timeframes[0]),
-            summary={
-                "timeframe": str(timeframes[0]),
-                "status": "data_unavailable_for_estimate",
-                "error": str(exc),
-            },
-        )
+    data_summary = _build_data_summary_payload(
+        data_config_path=data_config_path,
+        timeframes=timeframes,
+        estimate_only=estimate_only,
+    )
     data_summary_json = data_summary.as_json()
 
     template = load_prompt_template(cfg.prompt_path)
@@ -256,16 +301,22 @@ def generate_candidates_with_llm(
             "estimate_only": True,
             "prompt_version": cfg.prompt_version,
             "prompt_sha256": prompt_hash,
+            "data_summary": data_summary.summary,
             "estimated_calls": len(estimated_calls),
             "estimated_prompt_tokens_per_call": prompt_tokens_est,
             "estimated_completion_tokens_per_call": completion_tokens_est,
+            "max_total_prompt_tokens": cfg.budget.max_total_prompt_tokens,
+            "max_total_completion_tokens": cfg.budget.max_total_completion_tokens,
             "estimated_total_cost_usd": round(estimated_cost, 6),
             "model_plan": estimated_calls,
             "warnings": warnings,
         }
         (artefact_dir / "generation_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         out = Path(out_path) if out_path else artefact_dir / "candidates_validated.json"
-        out.write_text(json.dumps({"generation_id": generation_id, "candidates": []}, indent=2), encoding="utf-8")
+        out.write_text(
+            json.dumps({"generation_id": generation_id, "estimate_only": True, "candidates": []}, indent=2),
+            encoding="utf-8",
+        )
         return GenerationResult(
             generation_id=generation_id,
             artefact_dir=artefact_dir,
@@ -285,6 +336,7 @@ def generate_candidates_with_llm(
     raw_outputs: list[dict[str, Any]] = []
     reject_reasons: list[str] = []
     parsed_ideas: list[ParsedIdea] = []
+    total_prompt_tokens = 0
     total_completion_tokens = 0
     grok_generation_successes = 0
 
@@ -297,6 +349,11 @@ def generate_candidates_with_llm(
             temperature=cfg.temperature,
             top_p=cfg.top_p,
         )
+        total_prompt_tokens += int(resp.prompt_tokens)
+        if total_prompt_tokens > cfg.budget.max_total_prompt_tokens:
+            raise RuntimeError(
+                f"Prompt token cap exceeded: used={total_prompt_tokens}, max={cfg.budget.max_total_prompt_tokens}"
+            )
         total_completion_tokens += int(resp.completion_tokens)
         if total_completion_tokens > cfg.budget.max_total_completion_tokens:
             raise RuntimeError(
@@ -306,7 +363,7 @@ def generate_candidates_with_llm(
         ideas, reasons = parse_model_payload(content=resp.content, model_id=model_id, lane_name=lane_name)
         parsed_ideas.extend(ideas)
         reject_reasons.extend([f"call_{call_idx}:{x}" for x in reasons])
-        if _is_grok(model_id) and ideas:
+        if _is_required_grok_lane(lane_name) and ideas:
             grok_generation_successes += 1
 
         raw_outputs.append(
@@ -326,7 +383,7 @@ def generate_candidates_with_llm(
             }
         )
 
-    if cfg.fail_closed_on_missing_grok and any(_is_grok(x.model_id) and x.calls > 0 for x in cfg.lanes):
+    if cfg.fail_closed_on_missing_grok and any(_is_required_grok_lane(x.name) and x.calls > 0 for x in cfg.lanes):
         if grok_generation_successes == 0:
             raise RuntimeError("Grok generation lane produced no valid ideas; fail-closed policy active")
 
@@ -343,6 +400,11 @@ def generate_candidates_with_llm(
         temperature=cfg.temperature,
         top_p=cfg.top_p,
     )
+    total_prompt_tokens += int(synth_resp.prompt_tokens)
+    if total_prompt_tokens > cfg.budget.max_total_prompt_tokens:
+        raise RuntimeError(
+            f"Prompt token cap exceeded: used={total_prompt_tokens}, max={cfg.budget.max_total_prompt_tokens}"
+        )
     total_completion_tokens += int(synth_resp.completion_tokens)
     if total_completion_tokens > cfg.budget.max_total_completion_tokens:
         raise RuntimeError(
@@ -404,6 +466,11 @@ def generate_candidates_with_llm(
                 temperature=cfg.temperature,
                 top_p=cfg.top_p,
             )
+            total_prompt_tokens += int(improve_resp.prompt_tokens)
+            if total_prompt_tokens > cfg.budget.max_total_prompt_tokens:
+                raise RuntimeError(
+                    f"Prompt token cap exceeded: used={total_prompt_tokens}, max={cfg.budget.max_total_prompt_tokens}"
+                )
             total_completion_tokens += int(improve_resp.completion_tokens)
             if total_completion_tokens > cfg.budget.max_total_completion_tokens:
                 raise RuntimeError(
@@ -432,6 +499,11 @@ def generate_candidates_with_llm(
             )
             reject_reasons.extend([f"improve:{x}" for x in improve_reasons])
             if improved:
+                improved, improve_source_rejects = _restrict_ideas_to_source(
+                    candidate_ideas=improved,
+                    source_ideas=prev_curated,
+                )
+                reject_reasons.extend([f"improve:{x}" for x in improve_source_rejects])
                 improved_drafts, _ = ideas_to_candidate_drafts(
                     ideas=improved,
                     requested_timeframes=timeframes,
@@ -523,6 +595,8 @@ def generate_candidates_with_llm(
             "total_prompt_tokens": total_prompt_tokens,
             "total_completion_tokens": total_completion,
             "total_calls": len(raw_outputs),
+            "max_total_prompt_tokens": cfg.budget.max_total_prompt_tokens,
+            "max_total_completion_tokens": cfg.budget.max_total_completion_tokens,
             "estimated_total_cost_usd": round(estimated_cost, 6),
             "actual_total_cost_usd": round(actual_cost, 6),
         },
@@ -533,6 +607,7 @@ def generate_candidates_with_llm(
             "curated_ideas_count": len(curated_ideas),
             "rejections_count": len(reject_reasons),
             "candidate_file": str(out_candidate_path),
+            "candidate_file_enriched": str(artefact_dir / "candidates_validated_enriched.json"),
         },
     }
     (artefact_dir / "generation_manifest.json").write_text(
